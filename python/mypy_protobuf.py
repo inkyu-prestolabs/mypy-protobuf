@@ -14,6 +14,8 @@ import google.protobuf.descriptor_pb2 as d
 import six
 from google.protobuf.compiler import plugin_pb2 as plugin_pb2
 
+import mypy_ext_pb2
+
 MYPY = False
 if MYPY:
     from typing import (
@@ -122,6 +124,11 @@ class PkgWriter(object):
         self.locals = set()  # type: Set[Text]
         self.builtin_vars = set()  # type: Set[Text]
         self.py2_builtin_vars = set()  # type: Set[Text]
+
+        self.custom_types = {}
+        if mypy_ext_pb2.pytype_import in fd.options.Extensions:
+            for t in fd.options.Extensions[mypy_ext_pb2.pytype_import]:
+                self.custom_types[t.type] = self._import(t.module, t.type)
 
     def _import(self, path, name):
         # type: (Text, Text) -> Text
@@ -533,6 +540,12 @@ class PkgWriter(object):
 
     def python_type(self, field):
         # type: (d.FieldDescriptorProto) -> Text
+        if mypy_ext_pb2.pytype in field.options.Extensions:
+            custom_type = field.options.Extensions[mypy_ext_pb2.pytype]
+            if custom_type not in self.custom_types:
+                raise KeyError('Unknown type: %s. Use pytype_import before use.' % custom_type)
+            return self.custom_types[custom_type]
+
         b_float = self._builtin("float")
         b_int = self._builtin("int")
         b_bool = self._builtin("bool")
