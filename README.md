@@ -1,22 +1,46 @@
-mypy-protobuf: Generate mypy stub files from protobuf specs [![Build Status](https://travis-ci.org/dropbox/mypy-protobuf.svg?branch=master)](https://travis-ci.org/dropbox/mypy-protobuf)
+mypy-protobuf: Generate mypy stub files from protobuf specs
+
+[![CI](https://github.com/dropbox/mypy-protobuf/workflows/CI/badge.svg)](https://github.com/dropbox/mypy-protobuf/actions?query=branch%3Amaster)
+[![pypi](https://img.shields.io/pypi/v/mypy-protobuf?logo=Pypi)](https://pypi.org/project/mypy-protobuf/)
+[![license](https://img.shields.io/github/license/dropbox/mypy-protobuf)](https://github.com/dropbox/mypy-protobuf/blob/master/LICENSE)
 ===========================================================
 
+We released a new major version (2.\*) on 02/02/2021! It includes some backward incompatible changes.
+See [Changelog](CHANGELOG.md) for recent changes.
+
 ## Requirements
-protoc 3.0.0 or greater
-python 2.7, 3.5, 3.6, 3.7 3.8
-[python-protobuf >= 3.13.0](https://pypi.org/project/protobuf/)
-[mypy >= v0.780](https://pypi.org/project/mypy)
+
+[mypy >= v0.800](https://pypi.org/project/mypy)
+[protoc](https://github.com/protocolbuffers/protobuf/releases) 3.14.0 or greater
+[python-protobuf >= 3.14.0](https://pypi.org/project/protobuf/)
+[python >= 3.6](https://www.python.org/downloads/source/) - for running mypy-protobuf plugin. Generated stubs will compatible back to python2.
 
 Other configurations may work, but are not supported in testing currently. We would be open to expanding this list if a need arises - file an issue on the issue tracker.
 
-## Python Implementation
-There is a python implementation of the plugin in `python/protoc-gen-mypy`. On windows
-you will have to use `python/protoc_gen_mypy.bat` for the executable.
+## Installation
 
 The plugin can be installed with
 ```
 pip install mypy-protobuf
 ```
+To install unreleased
+```
+REV=master  # or whichever unreleased git rev you'd like
+pip install git+https://github.com/dropbox/mypy-protobuf.git@$REV
+
+# For older (1.x) versions of mypy protobuf - you may need
+pip install git+https://github.com/dropbox/mypy-protobuf.git@$REV#subdirectory=python
+```
+
+## Getting Help
+
+Find other developers in the mypy-protobuf slack workspace ([Invitation Link](https://join.slack.com/t/mypy-protobuf/shared_invite/zt-scogn8b5-MhetFnFYGi6V513aRsbe_Q)). If your company uses slack and mypy-protobuf, you may opt to use slack-connect to make a shared channel.
+
+## Implementation
+The implementation of the plugin is in `mypy_protobuf/main.py`, which installs to
+a posix executable protoc-gen-mypy.
+On windows you will have to use `protoc_gen_mypy.bat` for the executable.
+
 On posix, ensure that the protoc-gen-mypy script installed onto your $PATH. Then run.
 ```
 protoc --python_out=output/location --mypy_out=output/location
@@ -29,34 +53,120 @@ On windows, provide the bat file:
 ```
 protoc --plugin=protoc-gen-mypy=path/to/protoc_gen_mypy.bat --python_out=output/location --mypy_out=output/location
 ```
+
+## Features
+
+See [Changelog](CHANGELOG.md) for full listing
+
+### Types enum int values more strongly
+
+Enum int values produce stubs which wrap the int values in NewType
+```
+enum MyEnum {
+  FOO = 0;
+  BAR = 1;
+}
+```
+Will yield an [enum type wrapper](https://github.com/python/typeshed/blob/16ae4c61201cd8b96b8b22cdfb2ab9e89ba5bcf2/stubs/protobuf/google/protobuf/internal/enum_type_wrapper.pyi) whose methods type to `MyEnum.V` rather than `int`.
+This allows mypy to catch bugs where the wrong enum value is being used.
+
+mypy-protobuf  autogenerates an instance of the EnumTypeWrapper as follows.
+
+```
+class MyEnum(metaclass=_MyEnum):
+    V = typing.NewType('V', builtins.int)
+
+FOO = MyEnum.V(1)
+BAR = MyEnum.V(2)
+
+class _MyEnum(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[MyEnum.V], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor = ...
+    FOO = MyEnum.V(1)
+    BAR = MyEnum.V(2)
+```
+
+Calling code may be typed as follows. Note that the type of `x` must be quoted
+until [upstream protobuf](https://github.com/protocolbuffers/protobuf/pull/8182) supports `V`
+```
+def f(x: 'MyEnum.V'):
+    print(x)
+
+f(MyEnum.Value("FOO"))
+```
+
+### Supports generating type wrappers for fields and maps
+
+M.proto
+```
+message M {
+  uint32 user_id = 1 [(mypy_protobuf.casttype)="mymod.UserId"
+  map<uint32, string> email_by_uid = 2 [
+    (mypy_protobuf.keytype)="path/to/mymod.UserId",
+    (mypy_protobuf.valuetype)="path/to/mymod.Email"
+  ];
+}
+```
+mymod.py
+```
+UserId = NewType("UserId", int)
+Email = NewType("Email", Text)
+```
+
+### `py_generic_services`
+If `py_generic_services` is set in your proto file, then mypy-protobuf will
+generate service stubs. If you want GRPC stubs instead - use the GRPC instructions.
+
+### `readable_stubs`
+If `readable_stubs` is set, mypy-protobuf will generate easier-to-read stubs. The downside
+to this approach - is that it's possible to generate stubs which do not pass mypy - particularly
+in the case of name collisions. mypy-protobuf defaults to generating stubs with fully qualified
+imports and mangled global-level identifiers to defend against name collisions between global
+identifiers and field names.
+
+If you're ok with this risk, try it out!
+```
+protoc --python_out=output/location --mypy_out=readable_stubs:output/location
+```
+
+### `relax_strict_optional_primitives`
+
+If you are using proto3, then primitives cannot be represented as NULL on the wire -
+only as their zero value. By default mypy-protobuf types message constructors to have
+non-nullable primitives (eg `int` instead of `Optional[int]`). python-protobuf itself will
+internally convert None -> zero value, and if you intentionally want to use this behavior,
+set this! We recommend avoiding this, but it may be helpful when migrating existing proto2 code.
+
+```
+protoc --python_out=output/location --mypy_out=relax_strict_optional_primitives:output/location
+```
+
+### Output suppression
 To suppress output, you can run
 ```
 protoc --python_out=output/location --mypy_out=quiet:output/location
 ```
 
-## Go Implementation
-There is a go implementation of the plugin in `go/src/protoc-gen-mypy`.
-The import sort order can be customized to split between stdlib and project protos
-by changing the `project` const at the top of the file (we use dropbox since our
-proto files are namespaced under dropbox/)
+## GRPC
 
-To build the plugin: `go get github.com/dropbox/mypy-protobuf/go/src/protoc-gen-mypy`.
+This plugin provides stubs generation for grpcio generated code.
+```
+protoc \
+    --python_out=output/location \
+    --mypy_out=output/location \
+    --grpc_out=output/location \
+    --mypy_grpc_out=output/location
+```
 
-The plugin can be used by adding the built target to the command line
-when running `protoc` (in addition to the normal plugin for output languages).
+Note that generated code for grpc will work only together with code for python and locations should be the same.
+If you need stubs for grpc internal code we suggest using this package https://github.com/shabbyrobe/grpc-stubs 
 
-## Support
-Dropbox internally uses both implementations. We internally directly use the python implementation.
-However, the go implementation here is a code drop from the Dropbox internal implementation with periodic
-re-upstreams. As a result, the python implementation will get more timely support. We encourage community
-contribution to improve quality/testing to bring both implementations to parity.
 
 ## Contributing
-Contributions to the implementations are welcome. Please run tests using `./run_test.sh`.
+Contributions to the implementation are welcome. Please run tests using `./run_test.sh`.
 Ensure code is formatted using black.
 ```
 pip3 install black
-black python/ test/
+black mypy_protobuf/main.py test/
 ```
 
 ## Contributors
@@ -68,6 +178,7 @@ black python/ test/
 - [@peterlvilim](https://github.com/peterlvilim)
 - [@msullivan](https://github.com/msullivan)
 - [@bradenaw](https://github.com/bradenaw)
+- [@ilevkivskyi](https://github.com/ilevkivskyi)
 
 ### Others
 - [@Ketouem](https://github.com/Ketouem)
@@ -89,6 +200,10 @@ black python/ test/
 - [@chadrik](https://github.com/chadrik)
 - [@EPronovost](https://github.com/EPronovost)
 - [@chrislawlor](https://github.com/chrislawlor)
+- [@henribru](https://github.com/henribru)
+- [@Evgenus](https://github.com/Evgenus)
+- [@MHDante](https://github.com/MHDante)
+- [@nelfin](https://github.com/nelfin)
 
 Licence etc.
 ------------

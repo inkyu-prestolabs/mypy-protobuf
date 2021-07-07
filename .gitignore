@@ -7,11 +7,12 @@ __pycache__/
 /env/
 /mypy_env/
 *.pyc
-/generated/**/*.py
-/generated/**/*.pyi
+/test/generated/**/*.py
+/test/generated/**/*.pyi
+!/test/generated/**/__init__.py
 .pytest_cache
-/python/build/
-/python/dist/
+/build/
+/dist/
 *.egg-info
 .idea/
 *.DS_Store

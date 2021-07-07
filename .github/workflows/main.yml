@@ -1,0 +1,91 @@
+name: CI
+
+# Run on git push, PR, or manually from the Actions tab
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  run_test:
+    name: ${{ matrix.py-ver-mypy-protobuf }} / ${{matrix.py-ver-mypy-target}} / ${{matrix.py-ver-unit-tests}} protoc/mypytarget/unittests py versions
+    runs-on: ubuntu-latest
+    env:
+      PY_VERSIONS_TO_INSTALL: 2.7.18 3.6.14 3.7.11 3.8.11 3.9.6
+    strategy:
+      matrix:
+        # Running mypy-protobuf itself
+        # py-ver-mypy-protobuf: []
+        # --python-version=X target passed into mypy
+        # py-ver-mypy-target: []
+        # Run unit tests - validating that correct typechecking usages
+        # of the google.protobuf library in various python versions
+        # also run at runtime
+        # py-ver-unit-tests: []
+
+        # Explicitly list out each part of the matrix we're using, rather
+        # than automatically multiplying the set in together, so we don't
+        # over-test combinations unnecessarily.
+        include:
+          # Include a python3 compile with mypy targeting 2.7 code
+          - py-ver-mypy-protobuf: 3.9.6
+            py-ver-mypy-target: 2.7
+            py-ver-unit-tests: 2.7.18
+
+          # Include py 3.6 - 3.9 for mypy-protobuf runtime
+          - py-ver-mypy-protobuf: 3.6.14
+            py-ver-mypy-target: 3.8
+            py-ver-unit-tests: 3.8.11
+          - py-ver-mypy-protobuf: 3.7.11
+            py-ver-mypy-target: 3.8
+            py-ver-unit-tests: 3.8.11
+          - py-ver-mypy-protobuf: 3.8.11
+            py-ver-mypy-target: 3.8
+            py-ver-unit-tests: 3.8.11
+          - py-ver-mypy-protobuf: 3.9.6
+            py-ver-mypy-target: 3.8
+            py-ver-unit-tests: 3.8.11
+    steps:
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v1
+        with:
+          version: '3.17.3'
+      - uses: actions/checkout@v2
+      - name: Cache pyenv
+        uses: actions/cache@v2
+        with:
+          path: ~/.pyenv
+          key: ${{env.PY_VERSIONS_TO_INSTALL}}-${{hashFiles('setup.py')}}
+      - name: Install pyenv
+        run: |
+          if [ ! -e ~/.pyenv ]; then
+            curl https://pyenv.run | bash
+
+            export PATH="$HOME/.pyenv/bin:$PATH"
+            eval "$(pyenv init -)"
+            eval "$(pyenv init --path)"
+            eval "$(pyenv virtualenv-init -)"
+            for PY in $PY_VERSIONS_TO_INSTALL; do
+              pyenv install --skip-existing $PY
+              pyenv shell $PY
+              python -m pip install virtualenv
+            done
+          fi
+      - name: Run Tests (./run_test.sh)
+        env:
+          PY_VER_MYPY_PROTOBUF: ${{matrix.py-ver-mypy-protobuf}}
+          PY_VER_MYPY_TARGET: ${{matrix.py-ver-mypy-target}}
+          PY_VER_UNIT_TESTS: ${{matrix.py-ver-unit-tests}}
+        run: |
+          export PATH="$HOME/.pyenv/bin:$PATH"
+          eval "$(pyenv init -)"
+          eval "$(pyenv virtualenv-init -)"
+          ./run_test.sh
+
+  black:
+    name: Black formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-python@v2
+      - name: Run black
+        run: |
+          pip3 install black
+          black --check mypy_protobuf/main.py test/

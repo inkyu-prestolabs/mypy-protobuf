@@ -19,6 +19,10 @@ import six
 from google.protobuf.descriptor import FieldDescriptor
 
 import testproto.test_pb2 as test_pb2
+from testproto.reexport_pb2 import (
+    SimpleProto3 as ReexportedSimpleProto3,
+    FOO3 as ReexportedFOO3,
+)
 from testproto.test_extensions2_pb2 import SeparateFileExtension
 from testproto.test_pb2 import (
     DESCRIPTOR,
@@ -29,14 +33,31 @@ from testproto.test_pb2 import (
     Simple1,
     Simple2,
 )
-from testproto.test3_pb2 import SimpleProto3, OuterMessage3
+from testproto.test3_pb2 import (
+    FOO3,
+    OuterMessage3,
+    SimpleProto3,
+)
 from testproto.Capitalized.Capitalized_pb2 import lower, lower2, Upper
 
-from typing import Any, Optional
+from typing import (
+    Any,
+    NewType,
+    Optional,
+    Generator,
+    Text,
+    Tuple,
+)
 
-MYPY = False
-if MYPY:
-    from testproto.test_pb2 import OuterEnumValue
+
+UserId = NewType("UserId", int)
+
+
+class Email(Text):
+    def __new__(cls, val):
+        # type: (Text) -> Any
+        assert "@" in val, "Email is not valid"
+        return Text.__new__(cls, val)  # type: ignore
 
 
 def _is_summary(l):
@@ -71,10 +92,9 @@ def compare_pyi_to_expected(output_path):
 
 def test_generate_mypy_matches():
     # type: () -> None
-    proto_files = glob.glob("proto/testproto/*.proto") + glob.glob(
-        "proto/testproto/*/*.proto"
-    )
-    assert len(proto_files) == 10  # Just a sanity check that all the files show up
+    # Once we're on python3, we can simplify this to glob.glob("proto/**/*.proto, recursive=True)
+    proto_files = glob.glob("proto/**/*.proto") + glob.glob("proto/*/*/*.proto")
+    assert len(proto_files) == 15  # Just a sanity check that all the files show up
 
     failures = []
     for fn in proto_files:
@@ -88,7 +108,7 @@ def test_generate_mypy_matches():
         ]  # Eg. [testproto, dot/com]
         components.append(last)  # Eg. [testproto, dot/com, test_pb2.proto]
 
-        output = os.path.join("generated", *components)
+        output = os.path.join("test", "generated", *components)
 
         failures.append(compare_pyi_to_expected(output))
 
@@ -100,32 +120,37 @@ def test_generate_mypy_matches():
 def test_generate_negative_matches():
     # type: () -> None
     """Confirm that the test_negative expected file matches an error for each line"""
-    test_negative_lines = open("test_negative/negative.py").readlines()
-    # Grab the line number of the failures
-    errors_27 = set(
-        int(l.split(":")[1])
-        for l in open("test_negative/output.expected.2.7").readlines()
-        if not _is_summary(l)
-    )
-    errors_35 = set(
-        int(l.split(":")[1])
-        for l in open("test_negative/output.expected.3.5").readlines()
-        if not _is_summary(l)
-    )
+
+    def grab_errors(filename):
+        # type: (str) -> Generator[Tuple[str, int], None, None]
+        for line in open(filename).readlines():
+            if _is_summary(line):
+                continue
+            parts = line.split(":")
+            yield parts[0], int(parts[1])
+
+    def grab_expectations(filename, marker):
+        # type: (str, str) -> Generator[Tuple[str, int], None, None]
+        for idx, line in enumerate(open(filename).readlines()):
+            if marker in line:
+                yield filename, idx + 1
+
+    errors_27 = set(grab_errors("test_negative/output.expected.2.7"))
+    errors_38 = set(grab_errors("test_negative/output.expected.3.8"))
 
     expected_errors_27 = set(
-        idx + 1 for idx, line in enumerate(test_negative_lines) if "E:2.7" in line
-    )
-    expected_errors_35 = set(
-        idx + 1 for idx, line in enumerate(test_negative_lines) if "E:3.5" in line
-    )
+        grab_expectations("test_negative/negative.py", "E:2.7")
+    ) | set(grab_expectations("test_negative/negative_2.7.py", "E:2.7"))
+    expected_errors_38 = set(
+        grab_expectations("test_negative/negative.py", "E:3.8")
+    ) | set(grab_expectations("test_negative/negative_3.8.py", "E:3.8"))
 
     assert errors_27 == expected_errors_27
-    assert errors_35 == expected_errors_35
+    assert errors_38 == expected_errors_38
 
     # Some sanity checks to make sure we don't mess this up. Please update as necessary.
-    assert len(errors_27) == 46
-    assert len(errors_35) == 46
+    assert len(errors_27) == 52
+    assert len(errors_38) == 64
 
 
 def test_func():
@@ -138,6 +163,8 @@ def test_func():
 
     s2 = Simple1.FromString(s.SerializeToString())
     assert s2.a_string == "Hello"
+    assert s2.A_STRING_FIELD_NUMBER == 1
+    assert s2.USER_ID_FIELD_NUMBER == 21
 
     s3 = Simple1()
     s3.ParseFromString(s.SerializeToString())
@@ -163,12 +190,16 @@ def test_enum():
     assert OuterEnum.items() == [("FOO", 1), ("BAR", 2)]
 
     # Make sure we can assure typing with a couple of techniques
-    e2 = OuterEnum.Value("BAR")  # type: test_pb2.OuterEnumValue
+    e2 = OuterEnum.Value("BAR")  # type: test_pb2.OuterEnum.V
     assert OuterEnum.Name(e2) == "BAR"
-    e3 = OuterEnum.Value("BAR")  # type: OuterEnumValue
+    e3 = OuterEnum.Value("BAR")  # type: OuterEnum.V
     assert OuterEnum.Name(e3) == "BAR"
     e4 = OuterEnum.Value("BAR")  # type: int
     assert OuterEnum.Name(e2) == "BAR"
+
+    # Protobuf itself allows both unicode and bytes here.
+    # TODO - typeshed currently has a bug where it only allows str
+    assert OuterEnum.Value(u"BAR") == OuterEnum.Value(b"BAR")  # type: ignore[arg-type]
 
 
 def test_has_field_proto2():
@@ -211,6 +242,10 @@ def test_has_field_proto3():
     if six.PY2:
         assert not s.HasField(b"outer_message")
     assert not s.HasField("a_oneof")
+
+    assert not s.HasField("an_optional_string")
+    # synthetic oneof from optional field, see https://github.com/protocolbuffers/protobuf/blob/v3.12.0/docs/implementing_proto3_presence.md#updating-a-code-generator
+    assert not s.HasField("_an_optional_string")
 
     # Erase the types to verify that incorrect inputs fail at runtime
     # Each test here should be duplicated in test_negative to ensure mypy fails it too
@@ -278,6 +313,9 @@ def test_clear_field_proto3():
     s.ClearField("a_repeated_string")
     s.ClearField("a_oneof")
     s.ClearField(b"a_string")
+    s.ClearField("an_optional_string")
+    # synthetic oneof from optional field
+    s.ClearField("_an_optional_string")
 
     # Erase the types to verify that incorrect inputs fail at runtime
     # Each test here should be duplicated in test_negative to ensure mypy fails it too
@@ -320,6 +358,11 @@ def test_which_oneof_proto3():
     assert type(s.WhichOneof("a_oneof")) == str
     assert s.HasField(s.WhichOneof("a_oneof"))
     assert s.HasField(s.WhichOneof("b_oneof"))
+
+    # synthetic oneof from optional field
+    assert s.WhichOneof("_an_optional_string") is None
+    s.an_optional_string = "foo"
+    assert s.HasField(s.WhichOneof("_an_optional_string"))
 
     # Erase the types to verify that incorrect inputs fail at runtime
     # Each test here should be duplicated in test_negative to ensure mypy fails it too
@@ -391,6 +434,12 @@ def test_message_descriptor_proto3():
     assert SimpleProto3.DESCRIPTOR.full_name == "test3.SimpleProto3"
 
 
+def test_reexport_identical():
+    # type: () -> None
+    assert SimpleProto3 is ReexportedSimpleProto3
+    assert FOO3 is ReexportedFOO3
+
+
 def test_enum_descriptor():
     # type: () -> None
     assert OuterEnum.DESCRIPTOR.name == "OuterEnum"
@@ -413,3 +462,17 @@ def test_mapping_type():
     assert s.map_message.get_or_create(6) == OuterMessage3()
     assert s.map_message[6] == OuterMessage3()
     assert s.map_message.get_or_create(6) == OuterMessage3()
+
+    s2 = SimpleProto3(
+        map_scalar={5: "abcd"}, map_message={5: OuterMessage3(a_bool=True)}
+    )
+
+
+def test_casttype():
+    # type: () -> None
+    s = Simple1()
+    s.user_id = UserId(33)
+    assert s.user_id == 33
+    s.email = Email("abcd@gmail.com")
+    assert s.email == "abcd@gmail.com"
+    s.email_by_uid[UserId(33)] = Email("abcd@gmail.com")
