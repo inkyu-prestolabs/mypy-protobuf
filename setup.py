@@ -11,6 +11,7 @@ setup(
     py_modules=[
         "mypy_protobuf",
         "mypy_protobuf.main",
+        "mypy.protobuf.mypy_ext_pb2",
         "mypy_protobuf.extensions_pb2",
     ],
     url="https://github.com/dropbox/mypy-protobuf",
